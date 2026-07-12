@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agent-security-arena"
+version = "0.1.0"
+description = "Reproducible security evaluation harness for tool-using AI agents"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Vincent Plessy" }]
+dependencies = [
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "pydantic>=2.11,<3",
+  "PyYAML>=6.0.2,<7",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "coverage[toml]>=7.9,<8",
+  "mypy>=1.16,<2",
+  "pytest>=8.4,<9",
+  "pytest-cov>=6.2,<7",
+  "ruff>=0.12,<1",
+  "types-PyYAML>=6.0.12,<7",
+]
+
+[project.scripts]
+agent-arena = "agent_security_arena.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agent_security_arena"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --disable-warnings"
+
+[tool.coverage.run]
+branch = true
+source = ["agent_security_arena"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "C4", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["agent_security_arena"]

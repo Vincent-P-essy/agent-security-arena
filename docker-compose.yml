@@ -1,0 +1,20 @@
+services:
+  arena:
+    build: .
+    ports:
+      - "8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      ARENA_SUITE: /app/scenarios/core.yaml
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+

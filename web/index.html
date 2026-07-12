@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Agent Security Arena</title>
+    <link rel="stylesheet" href="/assets/style.css">
+    <script
+      src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"
+      integrity="sha384-uTYyvsSSUZeaPhb5RbKlQa0zY/WpX/QHfvg2mczXyBQOpkWPEDy9lczyp+w7SKXu"
+      crossorigin="anonymous"
+      defer
+    ></script>
+    <script src="/assets/app.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand-block">
+        <span class="brand-mark" aria-hidden="true">A</span>
+        <div>
+          <h1>Agent Security Arena</h1>
+          <p>Evaluation run <span id="run-id">not started</span></p>
+        </div>
+      </div>
+      <div class="run-state" id="run-state"><span class="state-dot"></span> Ready</div>
+    </header>
+
+    <main>
+      <section class="control-band" aria-label="Evaluation controls">
+        <div class="control-group">
+          <span class="control-label">Defenses</span>
+          <div class="segments" id="defense-controls">
+            <label><input type="checkbox" value="none" checked><span>None</span></label>
+            <label><input type="checkbox" value="lexical" checked><span>Lexical</span></label>
+            <label><input type="checkbox" value="separation" checked><span>Separation</span></label>
+            <label><input type="checkbox" value="policy" checked><span>Policy</span></label>
+            <label><input type="checkbox" value="policy_reviewer" checked><span>Policy + reviewer</span></label>
+          </div>
+        </div>
+        <label class="number-control">
+          <span>Repetitions</span>
+          <input id="repetitions" type="number" min="1" max="100" value="5">
+        </label>
+        <button class="primary-button" id="run-button" type="button">
+          <i data-lucide="play" aria-hidden="true"></i>
+          <span>Run evaluation</span>
+        </button>
+      </section>
+
+      <section class="metric-band" aria-label="Latest defense metrics">
+        <article class="metric">
+          <span>Best ASR</span>
+          <strong id="best-asr">--</strong>
+          <small id="best-defense">No result</small>
+        </article>
+        <article class="metric">
+          <span>Secret leakage</span>
+          <strong id="secret-rate">--</strong>
+          <small>best defense</small>
+        </article>
+        <article class="metric">
+          <span>False refusal</span>
+          <strong id="refusal-rate">--</strong>
+          <small>best defense</small>
+        </article>
+        <article class="metric">
+          <span>Scenarios</span>
+          <strong id="scenario-count">--</strong>
+          <small id="scenario-mix">loading</small>
+        </article>
+      </section>
+
+      <section class="analysis-grid">
+        <div class="chart-panel">
+          <div class="section-heading">
+            <div>
+              <h2>Defense comparison</h2>
+              <p>Lower is better for ASR, misuse, leakage and false refusal.</p>
+            </div>
+            <div class="legend" aria-label="Chart legend">
+              <span><i class="key asr"></i>ASR</span>
+              <span><i class="key misuse"></i>Tool misuse</span>
+              <span><i class="key refusal"></i>False refusal</span>
+            </div>
+          </div>
+          <div class="canvas-wrap"><canvas id="comparison-chart" role="img" aria-label="Defense metric bar chart"></canvas></div>
+        </div>
+
+        <aside class="scenario-panel">
+          <div class="section-heading">
+            <div>
+              <h2>Scenario corpus</h2>
+              <p id="corpus-status">Loading suite</p>
+            </div>
+            <button class="icon-button" id="refresh-scenarios" type="button" title="Refresh scenarios" aria-label="Refresh scenarios">
+              <i data-lucide="refresh-cw" aria-hidden="true"></i>
+            </button>
+          </div>
+          <div id="scenario-list" class="scenario-list"></div>
+        </aside>
+      </section>
+
+      <section class="results-section">
+        <div class="section-heading">
+          <div>
+            <h2>Measurement matrix</h2>
+            <p id="measurement-caption">Awaiting an evaluation run</p>
+          </div>
+          <button class="icon-button" id="export-button" type="button" title="Export JSON" aria-label="Export JSON" disabled>
+            <i data-lucide="download" aria-hidden="true"></i>
+          </button>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Defense</th>
+                <th>ASR</th>
+                <th>Tool misuse</th>
+                <th>Secret leakage</th>
+                <th>False refusal</th>
+                <th>Grounded</th>
+                <th>p95 latency</th>
+              </tr>
+            </thead>
+            <tbody id="results-body">
+              <tr><td colspan="7" class="empty-row">No experiment data</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
