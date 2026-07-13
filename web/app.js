@@ -88,11 +88,14 @@ async function runEvaluation() {
 
 function renderReport(report) {
   const summaries = report.summaries;
-  const best = [...summaries].sort((a, b) => a.attack_success_rate.rate - b.attack_success_rate.rate)[0];
+  const best = [...summaries].sort(
+    (a, b) => a.fault_rate.rate - b.fault_rate.rate || a.attack_success_rate.rate - b.attack_success_rate.rate,
+  )[0];
   document.querySelector("#best-asr").textContent = percent(best.attack_success_rate.rate);
   document.querySelector("#best-defense").textContent = defenseLabel(best.defense);
   document.querySelector("#secret-rate").textContent = percent(best.secret_leakage_rate.rate);
   document.querySelector("#refusal-rate").textContent = percent(best.false_refusal_rate.rate);
+  document.querySelector("#fault-rate").textContent = percent(best.fault_rate.rate);
   document.querySelector("#run-id").textContent = new Date(report.generated_at).toLocaleTimeString();
   document.querySelector("#measurement-caption").textContent = `${summaries.length} defense configurations / ${summaries[0]?.samples ?? 0} samples each`;
   document.querySelector("#export-button").disabled = false;
@@ -103,6 +106,8 @@ function renderReport(report) {
     const row = document.createElement("tr");
     const values = [
       defenseLabel(item.defense),
+      `${item.completed_samples}/${item.samples}`,
+      percent(item.fault_rate.rate),
       percent(item.attack_success_rate.rate),
       percent(item.tool_misuse_rate.rate),
       percent(item.secret_leakage_rate.rate),
@@ -114,7 +119,7 @@ function renderReport(report) {
       const cell = document.createElement("td");
       cell.textContent = value;
       if (index === 0) cell.className = "defense-name";
-      if (index === 1) cell.classList.add(item.attack_success_rate.rate <= 0.1 ? "rate-good" : "rate-bad");
+      if (index === 3) cell.classList.add(item.attack_success_rate.rate <= 0.1 ? "rate-good" : "rate-bad");
       row.append(cell);
     });
     body.append(row);
@@ -151,18 +156,19 @@ function drawChart(summaries) {
     context.fillText(`${Math.round(value * 100)}%`, margin.left - 7, y);
   }
   const groupWidth = plotWidth / Math.max(1, summaries.length);
-  const barWidth = Math.min(24, groupWidth / 4.5);
+  const barWidth = Math.min(20, groupWidth / 5.5);
   const series = [
     ["attack_success_rate", "#d9485f"],
     ["tool_misuse_rate", "#c77800"],
     ["false_refusal_rate", "#087f5b"],
+    ["fault_rate", "#4c6ef5"],
   ];
   summaries.forEach((item, groupIndex) => {
     const center = margin.left + groupWidth * (groupIndex + 0.5);
     series.forEach(([key, color], seriesIndex) => {
       const value = item[key].rate;
       const barHeight = value * plotHeight;
-      const x = center + (seriesIndex - 1) * (barWidth + 3) - barWidth / 2;
+      const x = center + (seriesIndex - (series.length - 1) / 2) * (barWidth + 3) - barWidth / 2;
       context.fillStyle = color;
       context.fillRect(x, margin.top + plotHeight - barHeight, barWidth, barHeight);
     });
@@ -192,6 +198,5 @@ document.querySelector("#run-button").addEventListener("click", runEvaluation);
 document.querySelector("#refresh-scenarios").addEventListener("click", loadScenarios);
 document.querySelector("#export-button").addEventListener("click", exportReport);
 window.addEventListener("resize", () => { if (state.report) drawChart(state.report.summaries); });
-window.addEventListener("DOMContentLoaded", () => { if (window.lucide) window.lucide.createIcons(); });
 loadScenarios();
 loadLatestReport();

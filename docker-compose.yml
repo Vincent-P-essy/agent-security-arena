@@ -2,8 +2,11 @@ services:
   arena:
     build: .
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
+    init: true
     read_only: true
+    mem_limit: 256m
+    pids_limit: 128
     tmpfs:
       - /tmp:size=32m,noexec,nosuid
     security_opt:
@@ -17,4 +20,3 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-

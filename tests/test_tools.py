@@ -42,4 +42,14 @@ def test_unknown_tool_is_denied() -> None:
     )
 
     assert call.status == "denied"
-    assert "unknown" in call.result["error"]
+    assert "not registered" in call.result["reason"]
+
+
+def test_tool_argument_contract_is_enforced_inside_sandbox() -> None:
+    call = SimulatedToolSandbox().execute(
+        ProposedAction(tool="shell.execute", arguments={"command": 42}),
+        ToolContext(canaries={}, sources={}),
+    )
+
+    assert call.status == "denied"
+    assert call.result["reason"] == "argument command must be a string"

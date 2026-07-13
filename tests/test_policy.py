@@ -40,7 +40,17 @@ def test_policy_blocks_untrusted_sensitive_tool() -> None:
     decision = get_preset("policy").authorize(scenario, action)
 
     assert decision.allowed is False
-    assert decision.event.rule_id in {"TOOL-DENY-001", "UNTRUSTED-AUTHORITY-001"}
+    assert decision.event.rule_id == "SHELL-DENY-001"
+
+
+def test_classifier_is_deterministic_and_explainable() -> None:
+    scenario = scenario_by_id("direct-secret-exfiltration")
+    decision = get_preset("classifier").inspect(scenario)
+
+    assert decision.refuse is True
+    assert decision.event is not None
+    assert decision.event.rule_id == "CONTENT-CLASSIFIER-001"
+    assert "score" in decision.event.reason
 
 
 def test_policy_allows_trusted_internal_telemetry() -> None:
