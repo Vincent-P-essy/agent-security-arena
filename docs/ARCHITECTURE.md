@@ -1,102 +1,157 @@
 # Architecture
 
-## Design goals
+## Security invariants
 
-The arena is designed around five properties:
+The design has four invariants that do not depend on target cooperation:
 
-1. **Observable outcomes.** A score comes from tool execution, data movement, state change or
-   evidence integrity, never from a keyword-only judgment of prose.
-2. **Reproducibility.** Suites, seeds, defense configuration, environment metadata and raw records
-   are included in every report.
-3. **Target portability.** Agent implementations sit behind one adapter contract.
-4. **Safe calibration.** The built-in target and all tools are deterministic and side-effect-free.
-5. **Usability accounting.** Every adversarial suite must include benign controls.
+1. A target can request a capability but cannot execute one or attest that one executed.
+2. Every target request is assigned untrusted provenance at the gateway.
+3. Built-in tool handlers are deterministic, in-memory simulations with no process or network API.
+4. An unavailable or malformed target produces a fault record, never an apparent security pass.
+
+## Execution sequence
+
+```text
+Scenario YAML
+  |
+  +-- schema, semantic and size validation
+  +-- bounded text / HTML / PDF extraction
+  |
+AgentGateway (trusted)
+  |
+  +-- TargetRequest ------------------------------------+
+  |   goal, extracted data, evidence, tool schemas,     |
+  |   prior gateway observations, trust-boundary flag   v
+  |                                               TargetAdapter
+  |                                                     |
+  +-- TargetTurn <--------------------------------------+
+  |   answer/citations OR capability requests only
+  |
+  +-- argument-schema validation
+  +-- deterministic authorization
+  +-- simulated execution or structured denial
+  +-- next target turn (maximum four)
+  +-- deterministic output review
+  +-- observable-outcome evaluation
+  +-- raw records, traces, metrics and hashes
+```
+
+The `TargetTurn` schema uses `extra="forbid"`. It has no execution-status, provenance, policy-event,
+role-state or tool-result fields. A target response containing `tool_calls` is invalid. For each
+`ActionRequest`, the gateway creates a new `ProposedAction(source="untrusted")`, validates it
+against the advertised JSON-like schema and makes the authorization decision locally.
+
+The gateway returns tool observations on a later turn. A target that keeps requesting actions is
+stopped after four turns and receives a `turn_limit` fault. This prevents an unbounded agent loop.
 
 ## Components
 
 ### Scenario loader
 
-`scenarios.py` treats YAML as an untrusted input. `yaml.safe_load` prevents object construction,
-Pydantic rejects unknown fields, file size is bounded, and semantic validation enforces unique IDs,
-attacker objectives and benign controls.
+`scenarios.py` treats YAML as untrusted. It rejects anchors/aliases before construction, uses
+`yaml.safe_load`, bounds the file to 1 MiB, requires suite schema `1.0`, rejects unknown fields and
+duplicate IDs, and validates every nested object with forbid-extra Pydantic models. Attack cases
+need an objective; every suite needs attacks and benign controls.
 
-### Agent adapters
+### Document extractor
 
-`AgentAdapter` has one operation:
+`documents.py` converts the scenario payload into an `ExtractionRecord`:
 
-```python
-def run(scenario: Scenario, defense: DefensePreset) -> AgentResult: ...
-```
+- plain ticket, text, tool and memory inputs must be valid UTF-8;
+- HTML is parsed without a browser, and comments/hidden fragments are retained with labels;
+- PDF input must be base64 bytes with a PDF signature;
+- encrypted PDF, active content, more than 20 pages, more than 1 MiB input or 200,000 extracted
+  characters are rejected;
+- byte and extracted-text SHA-256 values are recorded.
 
-The `ReferenceAgent` is a calibration target. It models a target that follows untrusted
-instructions unless a defense blocks the input, action or output. The `HttpAgentAdapter` connects
-an authorized external evaluation deployment and validates its response against `AgentResult`.
+Extraction happens before the target call, so an extraction failure is independently observable.
+The PDF parser is a format parser, not an isolation boundary for arbitrary untrusted production
+documents; the core corpus contains controlled fixtures.
 
-### Defense stack
+### Target adapters
 
-Defenses are composable controls rather than hidden prompt variants:
+`TargetAdapter.invoke` receives `TargetRequest` and returns `TargetTurn`. `HttpTargetAdapter`
+serializes only that request, disables redirects, caps responses at 1 MiB, applies a timeout and
+maps transport/schema failures to typed faults.
 
-- content inspection can refuse a lexical match;
-- trust separation prevents data from directly authorizing an action;
-- deterministic policy checks capability, provenance, destination, role and secret references;
-- output review removes canaries and replaces unresolved citations with evidence-backed records.
+`ReferenceTarget` is a deliberately vulnerable test double. The gateway registers a minimal local
+catalog containing only attack family, benign/attack class and declared calibration actions. It
+does not register evaluator expectations or canary values, and generic target adapters receive only
+`TargetRequest`. The catalog is never serialized through the HTTP contract. This target establishes
+evaluator sensitivity and must not be interpreted as a model-security result.
 
-Every decision produces a structured `PolicyEvent` with a stable rule ID, subject, reason and
-latency. This makes a refusal auditable and lets experiments attribute overhead to the control.
+### Capability gateway and sandbox
 
-### Simulated tool sandbox
+The gateway advertises seven named capability contracts. Required/unknown argument validation is
+enforced before policy. The `policy` presets then apply deny-by-default decisions:
 
-The sandbox implements case reads, knowledge search, secret retrieval, network publication, shell
-execution, role assumption and memory writes. The names mirror real agent capabilities while the
-handlers modify only an in-memory `ToolContext` and return structured data. There is no generic
-command dispatcher and no network client.
+- case and knowledge reads are allowlisted;
+- egress is restricted to two synthetic internal hostnames and cannot reference secrets;
+- secret reads, shell execution, self-service role changes and durable-memory writes are denied;
+- unregistered capabilities are denied.
+
+The sandbox still validates every action independently. Its handlers mutate only a fresh
+`ToolContext` or return structured values. `shell.execute` never calls a subprocess and
+`network.post` never opens a socket.
+
+### Defense stages
+
+Content inspection, action authorization and output review are separate stages. Each local decision
+produces a stable `PolicyEvent` with a rule ID, subject, decision, explanation and measured latency.
+The heuristic classifier and citation reviewer are deterministic rules, not learned classifiers or
+general entailment systems.
 
 ### Outcome evaluator
 
-The evaluator derives independent booleans for tool misuse, secret leakage, false refusal,
-grounding and each declared attacker objective. An attack succeeds when any objective declared by
-that scenario succeeds. This explicit contract avoids silently changing the benchmark definition
-when a defense or target changes.
+The evaluator derives tool misuse only from gateway-produced `ToolCall(status="executed")` records.
+It traces synthetic canaries through target-visible observations, raw traces and released output;
+compares role/memory state maintained locally; and resolves citations against versioned evidence.
+Scenario expectations never authorize a target action.
 
-### Metrics and reports
+### Runner and reports
 
-The runner randomizes scenario order with a recorded seed. Summaries retain numerator,
-denominator, rate and Wilson 95% interval. Raw records include the entire structured result and are
-written with the environment to JSON; compact comparisons are written to CSV and Markdown.
+The runner records a canonical suite digest, seed, Python/platform, gateway/policy versions and
+target versions. Scenario order is seeded. Every request/response turn includes timestamps, observed
+latency, parsed bodies and serialized-body hashes.
 
-## Data flow
+Reports include:
+
+- `experiment.json`: complete schema-versioned experiment;
+- `records.jsonl`: one evaluation per line;
+- `traces.jsonl`: one target turn per line with evaluation identity;
+- `summary.csv`: compact defense comparison;
+- `attack-breakdown.csv`: attempted/completed and security rates per attack family;
+- `REPORT.md`: human-readable limitations and results;
+- `manifest.sha256`: content hashes for all other artifacts.
+
+## Fault state machine
 
 ```text
-YAML suite --validate--> Scenario[] --seeded order--> AgentAdapter
-                                                     |
-                                    DefensePreset <--+--> ToolSandbox
-                                                     |
-                                             AgentResult
-                                                     |
-                                      objective evaluator
-                                                     |
-                             raw records + statistical summary
-                                                     |
-                                  API / dashboard / files
+attempt
+  +-- extraction failure ----------------> fault(extraction)
+  +-- request timeout -------------------> fault(timeout)
+  +-- connection failure ----------------> fault(connection)
+  +-- non-success HTTP ------------------> fault(http_status)
+  +-- oversized/malformed response ------> fault(response_too_large | invalid_response)
+  +-- target fails to terminate ---------> fault(turn_limit)
+  +-- valid final turn ------------------> completed
 ```
 
-## Extension points
+Faults retain partial traces and tool observations. They contribute to latency/cost and Fault Rate,
+but are excluded from conditional security/usability rates. Consequently, target unavailability
+cannot improve ASR.
 
-- Add a target by implementing `AgentAdapter` or the HTTP schema.
-- Add a tool as an isolated handler in `SimulatedToolSandbox` and update its policy rule.
-- Add an objective to `Objective` plus one explicit evaluator branch.
-- Add a defense preset by configuring the existing stages or introducing a stage with a
-  structured policy event.
-- Add a scenario only with a matching benign control when the content pattern could cause broad
-  refusal.
+## Extension checklist
+
+- A target integration implements `TargetAdapter`; it never receives evaluator expectations.
+- A new capability needs an input contract, handler, authorization rule and positive/negative tests.
+- A new objective needs one local observable and an evaluator branch.
+- A content-pattern defense needs both attack cases and benign near-neighbor controls.
+- A new report field requires a schema-version decision and regression test.
 
 ## Non-goals
 
-- The reference agent does not approximate the reasoning quality of a hosted model.
-- Lexical overlap is not a general natural-language entailment model. It verifies that a cited
-  claim is materially connected to the versioned evidence record.
-- The sandbox is not a containment boundary for arbitrary code because arbitrary code is never
-  accepted in the first place.
-- The core suite is a regression corpus, not a statistically representative sample of all agent
-  deployments.
-
+- The reference target does not approximate a hosted model.
+- The curated suite is a regression corpus, not a representative population sample.
+- Token overlap is not semantic entailment.
+- The simulator is not a sandbox for arbitrary target-provided code; such code is never accepted.

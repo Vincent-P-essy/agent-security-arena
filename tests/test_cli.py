@@ -1,8 +1,14 @@
+from importlib.metadata import version
 from pathlib import Path
 
 from agent_security_arena.cli import main
+from agent_security_arena.version import VERSION
 
 SUITE = Path(__file__).parents[1] / "scenarios" / "core.yaml"
+
+
+def test_runtime_and_package_versions_match() -> None:
+    assert version("agent-security-arena") == VERSION
 
 
 def test_list_command_omits_canary_values(capsys) -> None:  # type: ignore[no-untyped-def]
@@ -31,7 +37,9 @@ def test_evaluate_command_writes_reports(tmp_path: Path, capsys) -> None:  # typ
     )
 
     assert (tmp_path / "experiment.json").is_file()
-    assert "markdown:" in capsys.readouterr().out
+    assert (tmp_path / "traces.jsonl").is_file()
+    assert (tmp_path / "manifest.sha256").is_file()
+    assert "report:" in capsys.readouterr().out
 
 
 def test_serve_command_configures_uvicorn(monkeypatch) -> None:  # type: ignore[no-untyped-def]

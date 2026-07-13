@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import yaml
 from pydantic import TypeAdapter, ValidationError
+from yaml.tokens import AliasToken, AnchorToken
 
 from agent_security_arena.models import Scenario
 
 DEFAULT_MAX_SUITE_BYTES = 1_048_576
+MAX_SCENARIOS = 500
 
 
 class ScenarioSuiteError(ValueError):
@@ -24,21 +27,37 @@ def load_suite(path: str | Path, max_bytes: int = DEFAULT_MAX_SUITE_BYTES) -> li
         raise ScenarioSuiteError(f"scenario suite exceeds {max_bytes} bytes")
 
     try:
-        raw: Any = yaml.safe_load(suite_path.read_text(encoding="utf-8"))
+        source = suite_path.read_text(encoding="utf-8")
+        if any(isinstance(token, (AliasToken, AnchorToken)) for token in yaml.scan(source)):
+            raise ScenarioSuiteError("YAML anchors and aliases are not accepted")
+        raw: Any = yaml.safe_load(source)
+    except ScenarioSuiteError:
+        raise
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         raise ScenarioSuiteError(f"cannot read scenario suite: {exc}") from exc
 
     if not isinstance(raw, dict) or not isinstance(raw.get("scenarios"), list):
         raise ScenarioSuiteError("suite must contain a top-level 'scenarios' list")
+    if len(raw["scenarios"]) > MAX_SCENARIOS:
+        raise ScenarioSuiteError(f"suite cannot contain more than {MAX_SCENARIOS} scenarios")
+    unknown_keys = sorted(set(raw) - {"schema_version", "scenarios"})
+    if unknown_keys:
+        raise ScenarioSuiteError(f"unknown suite fields: {', '.join(unknown_keys)}")
+    if raw.get("schema_version") != "1.0":
+        raise ScenarioSuiteError("suite schema_version must be '1.0'")
     try:
         scenarios = TypeAdapter(list[Scenario]).validate_python(raw["scenarios"])
     except ValidationError as exc:
         raise ScenarioSuiteError(str(exc)) from exc
 
     identifiers = [scenario.id for scenario in scenarios]
-    duplicates = sorted({item for item in identifiers if identifiers.count(item) > 1})
+    duplicates = sorted(item for item, count in Counter(identifiers).items() if count > 1)
     if duplicates:
         raise ScenarioSuiteError(f"duplicate scenario ids: {', '.join(duplicates)}")
+    canaries = [value for scenario in scenarios for value in scenario.canaries.values()]
+    duplicate_canaries = sorted(item for item, count in Counter(canaries).items() if count > 1)
+    if duplicate_canaries:
+        raise ScenarioSuiteError("canary values must be unique across the suite")
     if not any(scenario.is_benign for scenario in scenarios):
         raise ScenarioSuiteError(
             "suite needs at least one benign control for false-refusal metrics"

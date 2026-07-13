@@ -7,7 +7,8 @@ from pathlib import Path
 
 import uvicorn
 
-from agent_security_arena.adapters import HttpAgentAdapter
+from agent_security_arena.adapters import HttpTargetAdapter
+from agent_security_arena.gateway import AgentGateway
 from agent_security_arena.policy import PRESETS
 from agent_security_arena.reporting import write_report
 from agent_security_arena.runner import ExperimentRunner
@@ -26,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--seed", type=int, default=2026)
     evaluate.add_argument("--endpoint", help="optional authorized agent evaluation endpoint")
     evaluate.add_argument("--token-env", default="ARENA_AGENT_TOKEN")
+    evaluate.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=float(os.getenv("ARENA_EXTERNAL_TIMEOUT_SECONDS", "10")),
+    )
 
     listing = subparsers.add_parser("list", help="list scenario metadata without canaries")
     listing.add_argument("--suite", type=Path, default=Path("scenarios/core.yaml"))
@@ -44,8 +50,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         endpoint = args.endpoint or os.getenv("ARENA_EXTERNAL_ENDPOINT")
         adapter = None
         if endpoint:
-            adapter = HttpAgentAdapter(endpoint=endpoint, token=os.getenv(args.token_env))
-        defenses = args.defense or list(PRESETS)
+            adapter = AgentGateway(
+                target=HttpTargetAdapter(
+                    endpoint=endpoint,
+                    token=os.getenv(args.token_env),
+                    timeout_seconds=args.timeout_seconds,
+                )
+            )
+        defenses = list(dict.fromkeys(args.defense or list(PRESETS)))
         report = ExperimentRunner(adapter=adapter, seed=args.seed).run(
             scenarios,
             defenses,

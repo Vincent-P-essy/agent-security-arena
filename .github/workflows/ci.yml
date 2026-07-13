@@ -18,33 +18,50 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
-          python-version: "3.12"
-          cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[dev]'
-      - run: ruff check src tests
-      - run: ruff format --check src tests
-      - run: mypy src
-      - run: pytest --cov=agent_security_arena --cov-report=xml
-      - uses: actions/upload-artifact@v4
+          version: "0.11.28"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - run: uv python install 3.12
+      - run: uv lock --check
+      - run: uv sync --frozen --all-extras --python 3.12
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+      - run: uv run mypy src
+      - run: uv run pytest --cov=agent_security_arena --cov-report=term-missing --cov-report=xml
+      - run: sha256sum --check manifest.sha256
+        working-directory: benchmarks/reference
+      - run: uv run agent-arena evaluate --repetitions 1 --output reports/ci
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: coverage
-          path: coverage.xml
+          name: coverage-and-calibration
+          path: |
+            coverage.xml
+            reports/ci
+          if-no-files-found: error
 
   container:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Validate Compose deployment
+        run: docker compose -f docker-compose.yml config --quiet
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           push: false
+          load: true
           tags: agent-security-arena:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
+      - name: Run a constrained policy-and-reviewer evaluation
+        run: >-
+          docker run --rm --read-only --cap-drop=ALL
+          --security-opt=no-new-privileges
+          --tmpfs /tmp:size=32m,noexec,nosuid,nodev,mode=1777
+          agent-security-arena:ci evaluate
+          --defense policy_reviewer --repetitions 1 --output /tmp/report

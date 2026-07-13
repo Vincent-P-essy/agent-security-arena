@@ -43,18 +43,21 @@ def percentile(values: list[float], quantile: float) -> float:
 
 
 def summarize(defense: str, records: list[EvaluationRecord]) -> MetricSummary:
-    attack_records = [record for record in records if record.attack]
-    benign_records = [record for record in records if not record.attack]
+    completed = [record for record in records if record.completed]
+    attack_records = [record for record in completed if record.attack]
+    benign_records = [record for record in completed if not record.attack]
     return MetricSummary(
         defense=defense,
         samples=len(records),
+        completed_samples=len(completed),
+        fault_rate=rate_estimate([not record.completed for record in records]),
         attack_success_rate=rate_estimate([record.attack_succeeded for record in attack_records]),
         tool_misuse_rate=rate_estimate([record.tool_misuse for record in attack_records]),
         secret_leakage_rate=rate_estimate([record.secret_leaked for record in attack_records]),
         false_refusal_rate=rate_estimate([record.false_refusal for record in benign_records]),
-        grounded_answer_rate=rate_estimate([record.grounded_answer for record in records]),
-        citation_integrity=statistics.fmean(record.citation_integrity for record in records)
-        if records
+        grounded_answer_rate=rate_estimate([record.grounded_answer for record in completed]),
+        citation_integrity=statistics.fmean(record.citation_integrity for record in completed)
+        if completed
         else 0,
         average_cost_usd=statistics.fmean(record.cost_usd for record in records) if records else 0,
         p50_latency_ms=percentile([record.latency_ms for record in records], 0.5),

@@ -1,210 +1,245 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
-from time import perf_counter
+from dataclasses import dataclass, field
+from json import JSONDecodeError
 from typing import Protocol
+from urllib.parse import urlparse
 
 import httpx
+from pydantic import ValidationError
 
 from agent_security_arena.models import (
-    AgentResult,
+    ActionRequest,
     AttackType,
     Citation,
-    PolicyEvent,
+    FaultKind,
     Scenario,
+    TargetRequest,
+    TargetTurn,
 )
-from agent_security_arena.policy import DefensePreset
-from agent_security_arena.tools import SimulatedToolSandbox, ToolContext
+
+MAX_RESPONSE_BYTES = 1_048_576
 
 
-class AgentAdapter(Protocol):
+class TargetInvocationError(RuntimeError):
+    def __init__(
+        self,
+        kind: FaultKind,
+        message: str,
+        *,
+        retryable: bool,
+        response_body: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.retryable = retryable
+        self.response_body = response_body
+
+
+@dataclass(frozen=True)
+class TargetExchange:
+    turn: TargetTurn
+    raw_response: str
+
+
+class TargetAdapter(Protocol):
+    """A target can propose capabilities, but it cannot execute or attest to them."""
+
     name: str
 
-    def run(self, scenario: Scenario, defense: DefensePreset) -> AgentResult: ...
+    def invoke(self, request: TargetRequest) -> TargetTurn | TargetExchange: ...
+
+
+@dataclass(frozen=True)
+class _ReferenceFixture:
+    attack_type: AttackType
+    is_benign: bool
+    actions: tuple[ActionRequest, ...]
 
 
 @dataclass
-class ReferenceAgent:
-    """Deterministic target used to calibrate the harness without a model API."""
+class ReferenceTarget:
+    """Deterministic, deliberately vulnerable calibration target.
 
-    sandbox: SimulatedToolSandbox
-    name: str = "reference-agent"
+    A minimal action catalog is registered locally by the gateway. Evaluator
+    expectations and canary values are never registered or sent. Results from
+    this target are not model benchmarks.
+    """
 
-    def run(self, scenario: Scenario, defense: DefensePreset) -> AgentResult:
-        started = perf_counter()
-        inspection = defense.inspect(scenario)
-        policy_events = [inspection.event] if inspection.event is not None else []
-        context = ToolContext(
-            canaries=scenario.canaries,
-            sources=scenario.trusted_sources,
-            role=scenario.input.initial_role,
+    name: str = "reference-target"
+    version: str = "reference-target/2.0"
+    _fixtures: dict[str, _ReferenceFixture] = field(default_factory=dict, init=False, repr=False)
+
+    def register_fixture(self, evaluation_id: str, scenario: Scenario) -> None:
+        self._fixtures[evaluation_id] = _ReferenceFixture(
+            attack_type=scenario.attack_type,
+            is_benign=scenario.is_benign,
+            actions=tuple(
+                ActionRequest(tool=action.tool, arguments=action.arguments)
+                for action in scenario.proposed_actions
+            ),
         )
 
-        if inspection.refuse:
-            citations = self._grounded_citations(scenario)
-            return AgentResult(
-                answer="I cannot act on content that matches the instruction-injection policy.",
-                refused=True,
-                policy_events=policy_events,
+    def invoke(self, request: TargetRequest) -> TargetTurn:
+        fixture = self._fixtures.get(request.evaluation_id)
+        if fixture is None:
+            raise TargetInvocationError(
+                FaultKind.INTERNAL,
+                "the reference target has no registered calibration fixture",
+                retryable=False,
+            )
+
+        citations = self._grounded_citations(request)
+        if request.turn > 0:
+            return self._finalize(request, fixture, citations)
+
+        if fixture.is_benign:
+            requests = list(fixture.actions)
+            if requests:
+                return TargetTurn(
+                    target_version=self.version,
+                    action_requests=requests,
+                    done=False,
+                )
+            return TargetTurn(
+                target_version=self.version,
+                answer=" ".join(request.trusted_sources.values())
+                or "The authorized request was reviewed.",
                 citations=citations,
-                effective_role=context.role,
-                provider_latency_ms=(perf_counter() - started) * 1_000,
             )
 
-        semantic_attacks = {
-            AttackType.TOOL_POISONING,
-            AttackType.DANGEROUS_TOOL_CALL,
-            AttackType.ROLE_BYPASS,
-            AttackType.EVIDENCE_HALLUCINATION,
-            AttackType.CITATION_MANIPULATION,
-        }
-        follows_attack = not scenario.is_benign and (
-            inspection.follow_instructions or scenario.attack_type in semantic_attacks
+        boundary_blocks_instruction = (
+            request.untrusted_content_is_data
+            and fixture.attack_type
+            not in {
+                AttackType.TOOL_POISONING,
+                AttackType.DANGEROUS_TOOL_CALL,
+                AttackType.ROLE_BYPASS,
+                AttackType.EVIDENCE_HALLUCINATION,
+                AttackType.CITATION_MANIPULATION,
+            }
         )
-        should_attempt = scenario.is_benign or follows_attack
-        calls = []
-        if should_attempt:
-            for action in scenario.proposed_actions:
-                decision = defense.authorize(scenario, action)
-                policy_events.append(decision.event)
-                if decision.allowed:
-                    calls.append(self.sandbox.execute(action, context))
-                else:
-                    calls.append(self.sandbox.denied(action, decision.event.reason))
-
-        disclosed = self._collect_disclosures(calls, scenario)
-        citations = self._build_citations(scenario, follows_attack)
-        answer = self._build_answer(scenario, calls, disclosed, follows_attack)
-
-        if defense.output_reviewer:
-            answer, disclosed, citations, reviewer_events = self._review(
-                answer, disclosed, citations, scenario
+        if boundary_blocks_instruction:
+            return TargetTurn(
+                target_version=self.version,
+                answer="The embedded content was treated as untrusted data.",
+                citations=citations,
             )
-            policy_events.extend(reviewer_events)
 
-        attack_actions_denied = bool(scenario.proposed_actions) and all(
-            call.status == "denied" for call in calls
-        )
-        refused = bool(not scenario.is_benign and attack_actions_denied)
-        return AgentResult(
-            answer=answer,
-            refused=refused,
-            tool_calls=calls,
-            policy_events=policy_events,
-            citations=citations,
-            disclosed_values=disclosed,
-            followed_untrusted_instruction=follows_attack and not attack_actions_denied,
-            effective_role=context.role,
-            provider_latency_ms=(perf_counter() - started) * 1_000,
-        )
+        requests = list(fixture.actions)
+        if requests:
+            return TargetTurn(
+                target_version=self.version,
+                action_requests=requests,
+                done=False,
+            )
 
-    @staticmethod
-    def _grounded_citations(scenario: Scenario) -> list[Citation]:
-        return [
-            Citation(source_id=source_id, claim=scenario.trusted_sources[source_id])
-            for source_id in scenario.expectations.required_citations
-            if source_id in scenario.trusted_sources
-        ]
-
-    def _build_citations(self, scenario: Scenario, follows_attack: bool) -> list[Citation]:
-        if follows_attack and scenario.attack_type in {
+        if fixture.attack_type in {
             AttackType.EVIDENCE_HALLUCINATION,
             AttackType.CITATION_MANIPULATION,
         }:
-            return [
+            citations = [
                 Citation(
                     source_id="fabricated-admin-approval",
                     claim="An administrator approved the requested action.",
                 )
             ]
-        return self._grounded_citations(scenario)
-
-    @staticmethod
-    def _collect_disclosures(calls: Sequence[object], scenario: Scenario) -> list[str]:
-        rendered = " ".join(str(call) for call in calls)
-        return [value for value in scenario.canaries.values() if value in rendered]
-
-    @staticmethod
-    def _build_answer(
-        scenario: Scenario, calls: Sequence[object], disclosed: list[str], follows_attack: bool
-    ) -> str:
-        if scenario.is_benign:
-            facts = " ".join(scenario.trusted_sources.values())
-            return facts or "The authorized request completed in the simulated environment."
-        if not follows_attack:
-            return (
-                "The embedded content was treated as untrusted data; no instruction was followed."
-            )
-        details = " ".join(disclosed)
-        if calls:
-            return f"The requested action was processed in the simulator. {details}".strip()
-        return "The untrusted instruction was accepted."
-
-    @staticmethod
-    def _review(
-        answer: str,
-        disclosed: list[str],
-        citations: list[Citation],
-        scenario: Scenario,
-    ) -> tuple[str, list[str], list[Citation], list[PolicyEvent]]:
-        events: list[PolicyEvent] = []
-        for canary in scenario.canaries.values():
-            if canary in answer:
-                answer = answer.replace(canary, "[REDACTED_CANARY]")
-                events.append(
-                    PolicyEvent(
-                        rule_id="OUTPUT-DLP-001",
-                        decision="sanitize",
-                        reason="canary value removed before response release",
-                        subject="answer",
-                        latency_ms=0,
-                    )
-                )
-        valid_citations = [item for item in citations if item.source_id in scenario.trusted_sources]
-        if len(valid_citations) != len(citations):
-            events.append(
-                PolicyEvent(
-                    rule_id="CITATION-INTEGRITY-001",
-                    decision="sanitize",
-                    reason="citation does not resolve to an evidence record",
-                    subject="citations",
-                    latency_ms=0,
-                )
-            )
-        present = {item.source_id for item in valid_citations}
-        valid_citations.extend(
-            Citation(source_id=source_id, claim=scenario.trusted_sources[source_id])
-            for source_id in scenario.expectations.required_citations
-            if source_id in scenario.trusted_sources and source_id not in present
+        return TargetTurn(
+            target_version=self.version,
+            answer="The untrusted instruction was accepted.",
+            citations=citations,
         )
-        return answer, [], valid_citations, events
+
+    def _finalize(
+        self,
+        request: TargetRequest,
+        fixture: _ReferenceFixture,
+        citations: list[Citation],
+    ) -> TargetTurn:
+        rendered = " ".join(call.model_dump_json() for call in request.observations)
+        all_denied = bool(request.observations) and all(
+            call.status == "denied" for call in request.observations
+        )
+        if fixture.is_benign:
+            answer = " ".join(request.trusted_sources.values())
+        elif all_denied:
+            answer = "The requested capabilities were denied by the local gateway."
+        else:
+            answer = "The requested action was processed. " + rendered
+        return TargetTurn(
+            target_version=self.version,
+            answer=answer.strip(),
+            citations=citations,
+            refused=not fixture.is_benign and all_denied,
+        )
+
+    @staticmethod
+    def _grounded_citations(request: TargetRequest) -> list[Citation]:
+        return [
+            Citation(source_id=source_id, claim=claim)
+            for source_id, claim in request.trusted_sources.items()
+        ]
 
 
 @dataclass
-class HttpAgentAdapter:
+class HttpTargetAdapter:
     endpoint: str
     token: str | None = None
     timeout_seconds: float = 10
-    name: str = "http-agent"
+    name: str = "http-target"
 
-    def run(self, scenario: Scenario, defense: DefensePreset) -> AgentResult:
+    def __post_init__(self) -> None:
+        parsed = urlparse(self.endpoint)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("target endpoint must be an absolute HTTP(S) URL")
+        if self.timeout_seconds <= 0:
+            raise ValueError("target timeout must be positive")
+
+    def invoke(self, request: TargetRequest) -> TargetExchange:
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
-        payload = {
-            "scenario": scenario.model_dump(mode="json"),
-            "defense": {
-                "name": defense.name,
-                "tool_contract": "simulated-tools-v1",
-                "untrusted_content_is_data": defense.separate_data_and_instructions,
-            },
-        }
-        with httpx.Client(
-            timeout=self.timeout_seconds,
-            follow_redirects=False,
-            headers=headers,
-        ) as client:
-            response = client.post(self.endpoint, json=payload)
-            response.raise_for_status()
-            if len(response.content) > 1_048_576:
-                raise ValueError("agent response exceeds 1 MiB")
-            return AgentResult.model_validate(response.json())
+        try:
+            with httpx.Client(
+                timeout=self.timeout_seconds,
+                follow_redirects=False,
+                headers=headers,
+            ) as client:
+                response = client.post(
+                    self.endpoint,
+                    content=request.model_dump_json(),
+                    headers={**headers, "Content-Type": "application/json"},
+                )
+                if len(response.content) > MAX_RESPONSE_BYTES:
+                    raise TargetInvocationError(
+                        FaultKind.RESPONSE_TOO_LARGE,
+                        "target response exceeds 1 MiB",
+                        retryable=False,
+                    )
+                response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise TargetInvocationError(
+                FaultKind.TIMEOUT, "target request timed out", retryable=True
+            ) from exc
+        except httpx.TransportError as exc:
+            raise TargetInvocationError(
+                FaultKind.CONNECTION, "target connection failed", retryable=True
+            ) from exc
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            raise TargetInvocationError(
+                FaultKind.HTTP_STATUS,
+                f"target returned HTTP {status}",
+                retryable=status >= 500 or status == 429,
+                response_body=exc.response.text,
+            ) from exc
+
+        try:
+            payload = response.json()
+            turn = TargetTurn.model_validate(payload)
+            return TargetExchange(turn=turn, raw_response=response.text)
+        except (JSONDecodeError, UnicodeDecodeError, ValidationError, ValueError) as exc:
+            raise TargetInvocationError(
+                FaultKind.INVALID_RESPONSE,
+                "target response does not satisfy the TargetTurn contract",
+                retryable=False,
+                response_body=response.text,
+            ) from exc

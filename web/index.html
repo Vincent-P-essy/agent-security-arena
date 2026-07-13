@@ -6,12 +6,6 @@
     <meta name="color-scheme" content="light">
     <title>Agent Security Arena</title>
     <link rel="stylesheet" href="/assets/style.css">
-    <script
-      src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"
-      integrity="sha384-uTYyvsSSUZeaPhb5RbKlQa0zY/WpX/QHfvg2mczXyBQOpkWPEDy9lczyp+w7SKXu"
-      crossorigin="anonymous"
-      defer
-    ></script>
     <script src="/assets/app.js" defer></script>
   </head>
   <body>
@@ -33,17 +27,19 @@
           <div class="segments" id="defense-controls">
             <label><input type="checkbox" value="none" checked><span>None</span></label>
             <label><input type="checkbox" value="lexical" checked><span>Lexical</span></label>
+            <label><input type="checkbox" value="classifier" checked><span>Classifier</span></label>
             <label><input type="checkbox" value="separation" checked><span>Separation</span></label>
             <label><input type="checkbox" value="policy" checked><span>Policy</span></label>
             <label><input type="checkbox" value="policy_reviewer" checked><span>Policy + reviewer</span></label>
+            <label><input type="checkbox" value="classifier_policy_reviewer" checked><span>Full stack</span></label>
           </div>
         </div>
         <label class="number-control">
           <span>Repetitions</span>
-          <input id="repetitions" type="number" min="1" max="100" value="5">
+          <input id="repetitions" type="number" min="1" max="10" value="5">
         </label>
         <button class="primary-button" id="run-button" type="button">
-          <i data-lucide="play" aria-hidden="true"></i>
+          <span class="button-glyph" aria-hidden="true">▶</span>
           <span>Run evaluation</span>
         </button>
       </section>
@@ -65,6 +61,11 @@
           <small>best defense</small>
         </article>
         <article class="metric">
+          <span>Fault rate</span>
+          <strong id="fault-rate">--</strong>
+          <small>best defense</small>
+        </article>
+        <article class="metric">
           <span>Scenarios</span>
           <strong id="scenario-count">--</strong>
           <small id="scenario-mix">loading</small>
@@ -82,6 +83,7 @@
               <span><i class="key asr"></i>ASR</span>
               <span><i class="key misuse"></i>Tool misuse</span>
               <span><i class="key refusal"></i>False refusal</span>
+              <span><i class="key fault"></i>Faults</span>
             </div>
           </div>
           <div class="canvas-wrap"><canvas id="comparison-chart" role="img" aria-label="Defense metric bar chart"></canvas></div>
@@ -94,7 +96,7 @@
               <p id="corpus-status">Loading suite</p>
             </div>
             <button class="icon-button" id="refresh-scenarios" type="button" title="Refresh scenarios" aria-label="Refresh scenarios">
-              <i data-lucide="refresh-cw" aria-hidden="true"></i>
+              <span aria-hidden="true">↻</span>
             </button>
           </div>
           <div id="scenario-list" class="scenario-list"></div>
@@ -108,7 +110,7 @@
             <p id="measurement-caption">Awaiting an evaluation run</p>
           </div>
           <button class="icon-button" id="export-button" type="button" title="Export JSON" aria-label="Export JSON" disabled>
-            <i data-lucide="download" aria-hidden="true"></i>
+            <span aria-hidden="true">⇩</span>
           </button>
         </div>
         <div class="table-scroll">
@@ -116,6 +118,8 @@
             <thead>
               <tr>
                 <th>Defense</th>
+                <th>Completed</th>
+                <th>Faults</th>
                 <th>ASR</th>
                 <th>Tool misuse</th>
                 <th>Secret leakage</th>
@@ -125,7 +129,7 @@
               </tr>
             </thead>
             <tbody id="results-body">
-              <tr><td colspan="7" class="empty-row">No experiment data</td></tr>
+              <tr><td colspan="9" class="empty-row">No experiment data</td></tr>
             </tbody>
           </table>
         </div>

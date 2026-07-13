@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.middleware.base import RequestResponseEndpoint
 
 from agent_security_arena.models import ExperimentReport
@@ -16,12 +16,22 @@ from agent_security_arena.scenarios import ScenarioSuiteError, load_suite
 
 
 class EvaluationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     defenses: list[str] = Field(
-        default_factory=lambda: ["none", "lexical", "separation", "policy", "policy_reviewer"],
+        default_factory=lambda: [
+            "none",
+            "lexical",
+            "classifier",
+            "separation",
+            "policy",
+            "policy_reviewer",
+            "classifier_policy_reviewer",
+        ],
         min_length=1,
         max_length=8,
     )
-    repetitions: int = Field(default=1, ge=1, le=100)
+    repetitions: int = Field(default=1, ge=1, le=10)
     include_records: bool = False
 
 
@@ -32,8 +42,9 @@ def create_app(suite_path: str | Path | None = None) -> FastAPI:
     configured_suite = Path(configured_value)
     app = FastAPI(
         title="Agent Security Arena",
-        version="0.1.0",
-        docs_url="/api/docs",
+        version="0.2.0",
+        docs_url=None,
+        redoc_url=None,
         openapi_url="/api/openapi.json",
     )
     app.state.suite_path = configured_suite
@@ -43,7 +54,7 @@ def create_app(suite_path: str | Path | None = None) -> FastAPI:
     async def security_headers(request: Request, call_next: RequestResponseEndpoint) -> Response:
         response = await call_next(request)
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self'; "
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
             "connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; "
             "base-uri 'none'; form-action 'self'"
         )
@@ -76,6 +87,8 @@ def create_app(suite_path: str | Path | None = None) -> FastAPI:
 
     @app.post("/api/evaluate")
     def evaluate(request: EvaluationRequest) -> dict[str, object]:
+        if len(set(request.defenses)) != len(request.defenses):
+            raise HTTPException(status_code=422, detail="defenses must be unique")
         unknown = sorted(set(request.defenses) - set(PRESETS))
         if unknown:
             raise HTTPException(status_code=422, detail=f"unknown defenses: {', '.join(unknown)}")
@@ -93,7 +106,11 @@ def create_app(suite_path: str | Path | None = None) -> FastAPI:
         payload: dict[str, object] = {
             "schema_version": report.schema_version,
             "suite": report.suite,
+            "suite_sha256": report.suite_sha256,
+            "seed": report.seed,
+            "repetitions": report.repetitions,
             "generated_at": report.generated_at,
+            "target_versions": report.target_versions,
             "summaries": [item.model_dump(mode="json") for item in report.summaries],
         }
         if request.include_records:
