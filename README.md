@@ -14,6 +14,12 @@ tool output, secret exfiltration, dangerous capabilities, role bypass, memory po
 evidence, and citation manipulation. Its 22 attacks are paired with 10 benign controls so a lower
 attack rate cannot hide indiscriminate refusal.
 
+## Running example
+
+![agent-security-arena running locally](docs/screenshots/application.png)
+
+Local evaluation of prompt-injection defenses against the bundled attack and control scenarios. No external model was used. [Commands and test results](docs/verification.md).
+
 ## What is actually enforced
 
 | Property | Implementation |
