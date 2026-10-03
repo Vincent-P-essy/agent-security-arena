@@ -14,11 +14,11 @@ tool output, secret exfiltration, dangerous capabilities, role bypass, memory po
 evidence, and citation manipulation. Its 22 attacks are paired with 10 benign controls so a lower
 attack rate cannot hide indiscriminate refusal.
 
-## Running example
+## Dashboard Preview
 
-![agent-security-arena running locally](docs/screenshots/application.png)
+![Offline evaluation comparing the repository defense strategies](docs/screenshots/dashboard-overview.png)
 
-Local evaluation of prompt-injection defenses against the bundled attack and control scenarios. No external model was used. [Commands and test results](docs/verification.md).
+Local evaluation using the bundled offline scenario suite and defense implementations. The displayed measurements describe this demonstration run.
 
 ## What is actually enforced
 
